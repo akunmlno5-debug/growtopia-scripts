@@ -8,8 +8,6 @@ local PATH_TIMEOUT = 5000
 local PATH_CHECK_INTERVAL = 100
 local DROP_DELAY = 500
 local DROP_VERIFY_TIMEOUT = 4000
-local GEM_UPDATE_INTERVAL = 100
-local POPUP_DURATION = 2500 -- Durasi pesan popup realtime (2.5 detik)
 local MAX_BREAK_RETRIES = 5  -- Batas maksimum percobaan pecah BGL/DL (Anti Infinite Loop)
 
 local rawSendPacket = SendPacket or sendPacket
@@ -37,12 +35,6 @@ local last_winner = nil
 local processingTake = false
 local processingScan = false
 local processingWinner = false
-
--- State Gem Overlay Realtime
-local floatingText = {}
-for i = 1, 6 do
-    floatingText[i] = { amount = 0, lastAmount = 0, timer = 0, popupMsg = "" }
-end
 
 -- ==========================================
 -- UTILS & HELPER FUNCTIONS
@@ -569,128 +561,6 @@ local function processWinner()
 end
 
 -- ==========================================
--- REALTIME GEMS POPUP & OVERLAY (IMGUI)
--- ==========================================
-
-local function updateGemState()
-    local _, gemMap = buildObjectMap()
-    for i = 1, 6 do
-        local tile = G[i]
-        local state = floatingText[i]
-        if tile then
-            local current = scanGemsAtTileFromMap(gemMap, tile.x, tile.y)
-
-            -- Deteksi Gem Baru Dimunculkan (Realtime Drop Event)
-            if current > state.lastAmount then
-                local added = current - state.lastAmount
-                state.popupMsg = "+" .. added .. " GEMS! (Total: " .. current .. ")"
-                state.timer = POPUP_DURATION
-            elseif current == 0 then
-                state.popupMsg = ""
-                state.timer = 0
-            end
-
-            state.amount = current
-            state.lastAmount = current
-        end
-    end
-end
-
-execThread(function()
-    while true do
-        updateGemState()
-        sleepMs(GEM_UPDATE_INTERVAL)
-    end
-end)
-
-local function drawGemPopups()
-    if type(ImGui) ~= "table" or type(ImGui.GetForegroundDrawList) ~= "function" then return end
-
-    local draw = ImGui.GetForegroundDrawList()
-    local ok, player = pcall(rawGetLocal)
-    if not ok or not player then return end
-
-    local playerX = math.floor((tonumber(player.posX) or 0) / 32)
-    local playerY = math.floor((tonumber(player.posY) or 0) / 32)
-    local screenW, screenH = 800, 480
-
-    if type(ImGui.GetIO) == "function" then
-        local io = ImGui.GetIO()
-        if io and io.DisplaySize then
-            screenW = tonumber(io.DisplaySize.x) or screenW
-            screenH = tonumber(io.DisplaySize.y) or screenH
-        end
-    end
-
-    -- Hitung total Gems P1 & P2 untuk Anti-Bust Alert
-    local totalP1 = floatingText[1].amount + floatingText[2].amount + floatingText[3].amount
-    local totalP2 = floatingText[4].amount + floatingText[5].amount + floatingText[6].amount
-
-    -- Anti-Bust Alert Banner di Atas Layar
-    if totalP1 > 21 then
-        draw:AddText(ImVec2(screenW / 2 - 80, 50), 0xFF0000FF, "[ ALERT: P1 BUST! (" .. totalP1 .. ") ]")
-    end
-    if totalP2 > 21 then
-        draw:AddText(ImVec2(screenW / 2 - 80, 70), 0xFF0000FF, "[ ALERT: P2 BUST! (" .. totalP2 .. ") ]")
-    end
-
-    -- Draw Realtime Gems Popups di Tile G
-    for i = 1, 6 do
-        local state = floatingText[i]
-        local tile = G[i]
-
-        if state and tile and state.amount > 0 then
-            local dx = tile.x - playerX
-            local dy = tile.y - playerY
-            local screenX = screenW / 2 + dx * 32
-            local screenY = screenH / 2 + dy * 32 - 25
-
-            local isP1 = i <= 3
-            local currentTotal = isP1 and totalP1 or totalP2
-
-            -- Penentuan Warna Teks (Merah jika Bust, Hijau jika Popup Baru, Putih jika Normal)
-            local color = 0xFFFFFFFF -- Default Putih
-            if currentTotal > 21 then
-                color = 0xFF0000FF -- Red (Bust Alert)
-            elseif state.timer > 0 then
-                color = 0xFF00FF00 -- Green (Popup Realtime Drop)
-            end
-
-            local displayText = (state.timer > 0 and state.popupMsg ~= "") 
-                                and ("G" .. i .. ": " .. state.popupMsg) 
-                                or ("G" .. i .. ": " .. state.amount .. " Gems")
-
-            pcall(function()
-                draw:AddText(ImVec2(screenX - 40, screenY), color, displayText)
-            end)
-        end
-    end
-end
-
-local function onDraw(deltaTime)
-    local elapsed = math.floor((tonumber(deltaTime) or 0.016) * 1000)
-    elapsed = math.max(0, math.min(elapsed, 1000))
-
-    for i = 1, 6 do
-        local state = floatingText[i]
-        if state.timer > 0 then
-            state.timer = math.max(0, state.timer - elapsed)
-        end
-    end
-
-    drawGemPopups()
-end
-
--- Register onDraw hook (try several common signatures for compatibility)
-if type(addHook) == "function" then
-    -- Common host signatures: (eventName, callback)
-    pcall(addHook, "OnDraw", onDraw)
-    pcall(addHook, "onDraw", onDraw)
-    -- Some hosts accept (callback, eventName) — try that too
-    pcall(addHook, onDraw, "onDraw")
-end
-
--- ==========================================
 -- COMMAND HANDLER
 -- ==========================================
 
@@ -746,10 +616,6 @@ local function handlePacketHook(a, b)
         P1_lock, P2_lock = nil, nil
         for i = 1, 6 do
             G[i] = nil
-            floatingText[i].amount = 0
-            floatingText[i].lastAmount = 0
-            floatingText[i].timer = 0
-            floatingText[i].popupMsg = ""
         end
         log("`2PROXY RESET.`0")
         return true
@@ -760,10 +626,6 @@ local function handlePacketHook(a, b)
             local x, y = getPlayerTile()
             if not x or not y then log("`4G" .. i .. " gagal:`0 Posisi tidak tersedia.") return true end
             G[i] = { x = x, y = y }
-            floatingText[i].amount = 0
-            floatingText[i].lastAmount = 0
-            floatingText[i].timer = 0
-            floatingText[i].popupMsg = ""
             local group = (i <= 3) and "P1" or "P2"
             log("`2G" .. i .. " (" .. group .. "):`0 " .. x .. "," .. y)
             return true
