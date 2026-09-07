@@ -681,7 +681,12 @@ local function onDraw(deltaTime)
     drawGemPopups()
 end
 
+-- Register onDraw hook (try several common signatures for compatibility)
 if type(addHook) == "function" then
+    -- Common host signatures: (eventName, callback)
+    pcall(addHook, "OnDraw", onDraw)
+    pcall(addHook, "onDraw", onDraw)
+    -- Some hosts accept (callback, eventName) — try that too
     pcall(addHook, onDraw, "onDraw")
 end
 
